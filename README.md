@@ -13,7 +13,7 @@ It expects at least 3 text files:
 And that's pretty much it! There are a few extra configurable
 options which can be supplied at initilisation but the library
 takes care of everything else:
-How it works:
+
 1. Load all of the above text files from disk
 2. Create the dataset in the format OpenAI expects
 3. Run some checks (check message token sizes are less than the maximum, estimate costs of training)
