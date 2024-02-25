@@ -26,7 +26,7 @@ How it works:
 From there, it's as simple as
 ```python
     from openft import OpenFT
-    
+
     conf = {
         # directory containing the 3 files
         "training_dir": "training_data/", 
@@ -37,10 +37,3 @@ From there, it's as simple as
     ft = OpenFT(conf)
     result_file_paths = ft.launch_fine_tune()
 ```
-
-
-### Extras
-- optional validation data
-- process the result files/plot
-- utils for inspecting training data
-- more than just QA datasets

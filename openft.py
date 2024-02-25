@@ -5,6 +5,8 @@ import openai
 from openai.types import FileObject
 from openai.types.fine_tuning.fine_tuning_job import FineTuningJob, Hyperparameters
 import tiktoken
+import pandas as pd
+import matplotlib.pyplot as plt
 from data import load_from_file, create_single_ft_message, write_dataset_to_jsonl, write_dataset_to_buffer
 from utils import check_all_examples_are_bounded, calc_total_tokens, calc_cost_of_training
 
@@ -223,3 +225,21 @@ class OpenFT:
         return self.client.fine_tuning.jobs.retrieve(
             fine_tuning_job_id=ft_id
         )
+
+    def process_results_file(self, csv_file: str, im_dir: str = ""):
+        df = pd.read_csv(csv_file)
+
+        plt.plot(df["step"], df["train_loss"])
+        plt.savefig(os.path.join(im_dir, "train_loss.png"))
+        plt.close()
+        plt.plot(df["step"], df["train_accuracy"])
+        plt.savefig(os.path.join(im_dir, "train_acc.png"))
+        plt.close()
+
+        if self.with_val_data:
+            plt.plot(df["step"], df["valid_loss"])
+            plt.savefig(os.path.join(im_dir, "val_loss.png"))
+            plt.close()
+            plt.plot(df["step"], df["valid_mean_token_accuracy"])
+            plt.savefig(os.path.join(im_dir, "valid_acc.png"))
+            plt.close()
