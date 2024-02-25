@@ -1,26 +1,46 @@
 # openft
 A helper framework for fine tuning with OpenAI
 
-Expects:
-- /training_data/questions.txt
-- /training_data/answers.txt
-- /training_data/prompt.py
-- Given config file
-- Given model name, (max tokens default = 4096)
-- Num epochs, batch sizes etc (defaults)
+This library is a simple wrapper around the OpenAI python SDK, with a focus on making the act
+of fine tuning on their platform smooth. I've found this useful for a few different projects.
 
+## Usage
+It expects at least 3 text files:
+1. prompt.txt - containing the System Prompt
+2. questions.txt - containing the example questions in order
+3. answers.txt - containing the example questions in order
+
+And that's pretty much it! There are a few extra configurable
+options which can be supplied at initilisation but the library
+takes care of everything else:
 How it works:
-- Load all of the above from disk
-- Create dataset.jsonl file
-- Run utils (check message token sizes, estimate costs)
-- Write file to disk or to a buffer
-- Assert it was created correctly and return info about it
-- Start Fine tuning job with the details
-- Poll it to check details and return if it's successful or errored
-- If successful or errored, return all the relevant details
-- Fetch the results file and write locally
+1. Load all of the above text files from disk
+2. Create the dataset in the format OpenAI expects
+3. Run some checks (check message token sizes are less than the maximum, estimate costs of training)
+4. Upload the dataset to OpenAI as a .jsonl file and wait for it to be processed
+5. Creates a fine tuning job with that dataset
+6. Polls to check the job's status during training
+7. Wait for it to succeed or error and return useful information
+8. Fetch the results file and write locally to disk
 
-Extras:
-- cancel if taking too long
+From there, it's as simple as
+```python
+    from openft import OpenFT
+    
+    conf = {
+        # directory containing the 3 files
+        "training_dir": "training_data/", 
+        "base_model_name": "gpt-3.5-turbo",
+        "num_epochs": 3,
+        "fine_tune_suffix": "my-fine-tuned-model"
+    }
+    ft = OpenFT(conf)
+    result_file_paths = ft.launch_fine_tune()
+```
+
+
+### Extras
 - optional validation data
+- process the result files/plot
+- utils for inspecting training data
 - more than just QA datasets

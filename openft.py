@@ -82,13 +82,15 @@ class OpenFT:
             file_content = (dataset_name, data_buffer)
 
         if user_prompt:
-            user_input = input("Are you happy to proceed? (yes/no): ")
+            user_input = input("Enter y/yes if you are happy to proceed: ")
             if user_input.lower() not in ["y", "yes"]:
                 print("Exiting...")
+                file_content.close()
                 return []
         
         print("Uploading dataset to OpenAI...")
         file_object = self._upload_file(file_content)
+        file_content.close()
         print(f"File created with ID: {file_object.id}")
         print(f"File can be viewed at https://platform.openai.com/storage/files/{file_object.id}")
         file_id = file_object.id
@@ -96,7 +98,7 @@ class OpenFT:
         assert file_object.status == "processed", "File was not processed correctly"
 
         print("Creating fine tuning job...")
-        ft_job = self._create_fine_tune(file_id)
+        ft_job = self._create_fine_tune_job(file_id)
         print(f"Created fine tune job: {ft_job.id}")
         print(f"Fine tuning job ca be viewed at https://platform.openai.com/finetune/{ft_job.id}")
 
@@ -154,7 +156,7 @@ class OpenFT:
         )
         return file
     
-    def _create_fine_tune(self, file_id: str) -> FineTuningJob:
+    def _create_fine_tune_job(self, file_id: str) -> FineTuningJob:
         hyper_params = Hyperparameters(n_epochs=self. num_epochs)
         if self.batch_size > 0:
             hyper_params.batch_size
