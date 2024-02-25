@@ -29,15 +29,23 @@ class OpenFT:
         self.ft_suffix = config.get("fine_tune_suffix", None)
         self.poll_wait = config.get("poll_wait", 30)
         self.token_cost = config.get("training_token_cost", 0.008)
+        self.with_val_data = config.get("with_validation", False)
     
-    def create_training_dataset(self) -> list[dict]:
+    def create_training_dataset(self, validation: bool = False) -> list[dict]:
         """
         create_training_dataset creates a dataset from the given question/answer text files
         in the format that OpenAI expects.
+        validation (bool) determines if this should look for the validation text files
         """
+        q_path = os.path.join(self.training_dir, "questions.txt")
+        a_path = os.path.join(self.training_dir, "answers.txt")
+        if validation:
+            q_path = os.path.join(self.training_dir, "val_questions.txt")
+            a_path = os.path.join(self.training_dir, "val_answers.txt")
+
         sys_prompts = load_from_file(os.path.join(self.training_dir, "system_prompt.txt"), None)
-        questions = load_from_file(os.path.join(self.training_dir, "questions.txt"), self.data_split)
-        answers = load_from_file(os.path.join(self.training_dir, "answers.txt"), self.data_split)
+        questions = load_from_file(q_path, self.data_split)
+        answers = load_from_file(a_path, self.data_split)
 
         assert len(sys_prompts) == 1, f"Found {len(sys_prompts)} number of system prompts"
         sys_prompt = sys_prompts[0]
@@ -47,7 +55,13 @@ class OpenFT:
         for q, a in zip(questions, answers):
             dataset.append(create_single_ft_message(sys_prompt, q, a))
 
-    def launch_fine_tune(self, validate=True, user_prompt=False, dataset_name="dataset.jsonl", write_to_disk=False, output_dir="") -> list[str]:
+    def launch_fine_tune(
+            self,
+            user_prompt: bool=False,
+            dataset_name: str="dataset.jsonl",
+            write_to_disk: bool=False,
+            output_dir: str=""
+            ) -> list[str]:
         """
         launch_fine_tune runs the pipeline of
         1. creating the datatset
@@ -58,19 +72,36 @@ class OpenFT:
         6. processing a succesful job
         7. fetches the results files and writes to disk
         7. returns the file paths of the results files
+
+        Args:
+        user_prompt: whether or not to have a user approve uploading the dataset file and run the training job
+        dataset_name: file name for the dataset, must be a .jsonl file
+        write_to_disk: whether or not to write the dataset jsonl file to local disk before uploading it
+        output_dir: the directory to write the result files to
+
+        Returns:
+        list[str] - contains the file paths of the results files from the fine tune job.
         """
         dataset = self.create_training_dataset()
+        val_dataset: list[dict] = None
+        if self.with_val_data:
+            val_dataset = self.create_training_dataset(validation=True)
 
-        if validate:
-            # validate that all examples are within the bound
-            enc = tiktoken.get_encoding(self.encoding)
-            flag, _ = check_all_examples_are_bounded(dataset, enc, self.max_token_size)
-            assert flag, f"Not all examples are within the {self.max_token_size} number of tokens limit"
+        # validate that all examples are within the bound
+        enc = tiktoken.get_encoding(self.encoding)
+        flag, _ = check_all_examples_are_bounded(dataset, enc, self.max_token_size)
+        assert flag, f"Not all examples are within the {self.max_token_size} number of tokens limit"
+        if val_dataset:
+            flag, _ = check_all_examples_are_bounded(val_dataset, enc, self.max_token_size)
+            assert flag, f"Not all validation examples are within the {self.max_token_size} number of tokens limit"
 
-            total = calc_total_tokens(dataset, enc)
-            cost = calc_cost_of_training(dataset, enc, self.num_epochs, self.token_cost)
-            print(f"There are {total} tokens in all {len(dataset)} examples")
-            print(f"This is esitimated to cost ${cost:.2f} for {self.num_epochs} epoch of training")
+        total = calc_total_tokens(dataset, enc)
+        cost = calc_cost_of_training(dataset, enc, self.num_epochs, self.token_cost)
+        if val_dataset:
+            total += calc_total_tokens(val_dataset, enc)
+            cost += calc_cost_of_training(val_dataset, enc, self.num_epochs, self.token_cost)
+        print(f"There are {total} tokens in total")
+        print(f"This is esitimated to cost ${cost:.2f} for {self.num_epochs} epochs of training")
 
         if write_to_disk:
             out_path = os.path.join(self.training_dir, dataset_name)
@@ -81,6 +112,17 @@ class OpenFT:
             data_buffer = write_dataset_to_buffer(dataset)
             file_content = (dataset_name, data_buffer)
 
+        val_file_content = None
+        if val_dataset:
+            if write_to_disk:
+                val_out_path = os.path.join(self.training_dir, "val_"+dataset_name)
+                write_dataset_to_jsonl(val_dataset, val_out_path)
+                print(f"Wrote validation dataset locally to {val_out_path}")
+                val_file_content = open(val_out_path, 'rb')
+            else:
+                val_data_buffer = write_dataset_to_buffer(val_dataset)
+                val_file_content = ("val_"+dataset_name, val_data_buffer)
+
         if user_prompt:
             user_input = input("Enter y/yes if you are happy to proceed: ")
             if user_input.lower() not in ["y", "yes"]:
@@ -89,16 +131,15 @@ class OpenFT:
                 return []
         
         print("Uploading dataset to OpenAI...")
-        file_object = self._upload_file(file_content)
-        file_content.close()
-        print(f"File created with ID: {file_object.id}")
-        print(f"File can be viewed at https://platform.openai.com/storage/files/{file_object.id}")
-        file_id = file_object.id
-        file_object = self.client.files.wait_for_processing(id=file_id)
-        assert file_object.status == "processed", "File was not processed correctly"
+        file_id = self._upload_file_and_wait(file_content)
+
+        val_file_id = None
+        if val_dataset:
+            print("Uploading validation dataset to OpenAI...")
+            val_file_id = self._upload_file_and_wait(val_file_content)
 
         print("Creating fine tuning job...")
-        ft_job = self._create_fine_tune_job(file_id)
+        ft_job = self._create_fine_tune_job(file_id, val_file_id)
         print(f"Created fine tune job: {ft_job.id}")
         print(f"Fine tuning job ca be viewed at https://platform.openai.com/finetune/{ft_job.id}")
 
@@ -127,7 +168,7 @@ class OpenFT:
         print("\n")
         print(f"Fine Tuned Model is {result_model}")
         cost = billable_tokens * self.token_cost / 1000.
-        print(f"Total cost of training is ${cost} with {billable_tokens} tokens")
+        print(f"Total cost of training was ${cost} with {billable_tokens} tokens")
 
         result_files_locations = self.fetch_results_files(results_files, output_dir)
         return result_files_locations
@@ -149,6 +190,16 @@ class OpenFT:
         content.write_to_file(fp)
         return fp
 
+    def _upload_file_and_wait(self, file_content: io.BufferedReader) -> str:
+        file_object = self._upload_file(file_content)
+        file_content.close()
+        print(f"File created with ID: {file_object.id}")
+        print(f"File can be viewed at https://platform.openai.com/storage/files/{file_object.id}")
+        file_id = file_object.id
+        file_object = self.client.files.wait_for_processing(id=file_id)
+        assert file_object.status == "processed", "File was not processed correctly"
+        return file_object.id
+
     def _upload_file(self, file_content: io.BufferedIOBase) -> FileObject:
         file = self.client.files.create(
             file=file_content,
@@ -156,12 +207,13 @@ class OpenFT:
         )
         return file
     
-    def _create_fine_tune_job(self, file_id: str) -> FineTuningJob:
+    def _create_fine_tune_job(self, file_id: str, val_file_id: str | None) -> FineTuningJob:
         hyper_params = Hyperparameters(n_epochs=self. num_epochs)
         if self.batch_size > 0:
             hyper_params.batch_size
         return self.client.fine_tuning.jobs.create(
             training_file=file_id,
+            validation_file=val_file_id,
             model=self.base_model,
             suffix=self.ft_suffix,
             hyperparameters=hyper_params
