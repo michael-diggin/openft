@@ -1,4 +1,5 @@
 import json
+import io
 
 
 def load_from_file(path: str, split: str | None = '\n\n') -> list[str]:
@@ -48,3 +49,10 @@ def write_dataset_to_jsonl(dataset: list[dict], path: str):
         for example in dataset:
             f.write(json.dumps(example))
             f.write('\n')
+
+def write_dataset_to_buffer(dataset: list[str]) -> io.BytesIO:
+    buffer = io.BytesIO()
+    for example in dataset:
+        buffer.write(json.dumps(example).encode('utf-8'))
+        buffer.write(b'\n')
+    return buffer

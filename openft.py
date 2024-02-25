@@ -1,20 +1,19 @@
 import os
+import io
 import time
 import openai
 from openai.types import FileObject
 from openai.types.fine_tuning.fine_tuning_job import FineTuningJob, Hyperparameters
 import tiktoken
-from data import load_from_file, create_single_ft_message, write_dataset_to_jsonl
+from data import load_from_file, create_single_ft_message, write_dataset_to_jsonl, write_dataset_to_buffer
 from utils import check_all_examples_are_bounded, calc_total_tokens, calc_cost_of_training
 
 class OpenFT:
     def __init__(self, config: dict):
         self._setup_with_config(config)
-        if self._api_key:
-            self.client = openai.OpenAI(api_key = self._api_key)
-        else:
-            # expect the API key to be present as OPENAI_API_KEY env variable
-            self.client = openai.OpenAI()
+        # expect the API key to be present as OPENAI_API_KEY env variable
+        # and the organisation ID present as OPENAI_ORG_ID
+        self.client = openai.OpenAI(api_key = self._api_key, organization=self._org_id)
 
 
     def _setup_with_config(self, config: dict):
@@ -25,6 +24,7 @@ class OpenFT:
         self.batch_size = config.get("batch_size", 0)
         self.data_split = config.get("data_split", "\n\n")
         self._api_key = config.get("openai_api_key", None)
+        self._org_id = config.get("openai_org_id", None)
         self.encoding = config.get("encoding", "cl100k_base")
         self.ft_suffix = config.get("fine_tune_suffix", None)
         self.poll_wait = config.get("poll_wait", 30)
@@ -47,7 +47,7 @@ class OpenFT:
         for q, a in zip(questions, answers):
             dataset.append(create_single_ft_message(sys_prompt, q, a))
 
-    def launch_fine_tune(self, validate=True) -> list[str]:
+    def launch_fine_tune(self, validate=True, user_prompt=False, dataset_name="dataset.jsonl", write_to_disk=False, output_dir="") -> list[str]:
         """
         launch_fine_tune runs the pipeline of
         1. creating the datatset
@@ -72,13 +72,25 @@ class OpenFT:
             print(f"There are {total} tokens in all {len(dataset)} examples")
             print(f"This is esitimated to cost ${cost:.2f} for {self.num_epochs} epoch of training")
 
-        out_path = os.path.join(self.training_dir, "dataset.jsonl")
-        write_dataset_to_jsonl(dataset, out_path)
-        print(f"Wrote dataset locally to {out_path}")
+        if write_to_disk:
+            out_path = os.path.join(self.training_dir, dataset_name)
+            write_dataset_to_jsonl(dataset, out_path)
+            print(f"Wrote dataset locally to {out_path}")
+            file_content = open(out_path, 'rb')
+        else:
+            data_buffer = write_dataset_to_buffer(dataset)
+            file_content = (dataset_name, data_buffer)
+
+        if user_prompt:
+            user_input = input("Are you happy to proceed? (yes/no): ")
+            if user_input.lower() not in ["y", "yes"]:
+                print("Exiting...")
+                return []
         
         print("Uploading dataset to OpenAI...")
-        file_object = self._upload_file(out_path)
+        file_object = self._upload_file(file_content)
         print(f"File created with ID: {file_object.id}")
+        print(f"File can be viewed at https://platform.openai.com/storage/files/{file_object.id}")
         file_id = file_object.id
         file_object = self.client.files.wait_for_processing(id=file_id)
         assert file_object.status == "processed", "File was not processed correctly"
@@ -86,6 +98,7 @@ class OpenFT:
         print("Creating fine tuning job...")
         ft_job = self._create_fine_tune(file_id)
         print(f"Created fine tune job: {ft_job.id}")
+        print(f"Fine tuning job ca be viewed at https://platform.openai.com/finetune/{ft_job.id}")
 
         while True:
             time.sleep(self.poll_wait)
@@ -114,7 +127,7 @@ class OpenFT:
         cost = billable_tokens * self.token_cost / 1000.
         print(f"Total cost of training is ${cost} with {billable_tokens} tokens")
 
-        result_files_locations = self.fetch_results_files(results_files)
+        result_files_locations = self.fetch_results_files(results_files, output_dir)
         return result_files_locations
 
     def fetch_results_files(self, result_files: list[str], output_dir: str = "") -> list[str]:
@@ -134,9 +147,9 @@ class OpenFT:
         content.write_to_file(fp)
         return fp
 
-    def _upload_file(self, path: str) -> FileObject:
+    def _upload_file(self, file_content: io.BufferedIOBase) -> FileObject:
         file = self.client.files.create(
-            file=open(path, 'rb'),
+            file=file_content,
             purpose='fine-tune'
         )
         return file
