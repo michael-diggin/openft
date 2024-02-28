@@ -56,6 +56,7 @@ class OpenFT:
         dataset = []
         for q, a in zip(questions, answers):
             dataset.append(create_single_ft_message(sys_prompt, q, a))
+        return dataset
 
     def launch_fine_tune(
             self,
@@ -109,7 +110,7 @@ class OpenFT:
             out_path = os.path.join(self.training_dir, dataset_name)
             write_dataset_to_jsonl(dataset, out_path)
             print(f"Wrote dataset locally to {out_path}")
-            file_content = open(out_path, 'rb')
+            file_content = (dataset_name, open(out_path, 'rb'))
         else:
             data_buffer = write_dataset_to_buffer(dataset)
             file_content = (dataset_name, data_buffer)
@@ -120,7 +121,7 @@ class OpenFT:
                 val_out_path = os.path.join(self.training_dir, "val_"+dataset_name)
                 write_dataset_to_jsonl(val_dataset, val_out_path)
                 print(f"Wrote validation dataset locally to {val_out_path}")
-                val_file_content = open(val_out_path, 'rb')
+                val_file_content = ("val_"+dataset_name, open(val_out_path, 'rb'))
             else:
                 val_data_buffer = write_dataset_to_buffer(val_dataset)
                 val_file_content = ("val_"+dataset_name, val_data_buffer)
@@ -129,7 +130,6 @@ class OpenFT:
             user_input = input("Enter y/yes if you are happy to proceed: ")
             if user_input.lower() not in ["y", "yes"]:
                 print("Exiting...")
-                file_content.close()
                 return []
         
         print("Uploading dataset to OpenAI...")
@@ -170,7 +170,7 @@ class OpenFT:
         print("\n")
         print(f"Fine Tuned Model is {result_model}")
         cost = billable_tokens * self.token_cost / 1000.
-        print(f"Total cost of training was ${cost} with {billable_tokens} tokens")
+        print(f"Total cost of training was ${cost:.2f} with {billable_tokens} tokens")
 
         result_files_locations = self.fetch_results_files(results_files, output_dir)
         return result_files_locations
@@ -192,17 +192,17 @@ class OpenFT:
         content.write_to_file(fp)
         return fp
 
-    def _upload_file_and_wait(self, file_content: io.BufferedReader) -> str:
+    def _upload_file_and_wait(self, file_content: tuple[str, io.IOBase]) -> str:
         file_object = self._upload_file(file_content)
-        file_content.close()
         print(f"File created with ID: {file_object.id}")
         print(f"File can be viewed at https://platform.openai.com/storage/files/{file_object.id}")
+        file_content[1].close()
         file_id = file_object.id
         file_object = self.client.files.wait_for_processing(id=file_id)
         assert file_object.status == "processed", "File was not processed correctly"
         return file_object.id
 
-    def _upload_file(self, file_content: io.BufferedIOBase) -> FileObject:
+    def _upload_file(self, file_content: tuple[str, io.IOBase]) -> FileObject:
         file = self.client.files.create(
             file=file_content,
             purpose='fine-tune'
@@ -210,9 +210,9 @@ class OpenFT:
         return file
     
     def _create_fine_tune_job(self, file_id: str, val_file_id: str | None) -> FineTuningJob:
-        hyper_params = Hyperparameters(n_epochs=self. num_epochs)
+        hyper_params = Hyperparameters(n_epochs=self.num_epochs)
         if self.batch_size > 0:
-            hyper_params.batch_size
+            hyper_params.batch_size = self.batch_size
         return self.client.fine_tuning.jobs.create(
             training_file=file_id,
             validation_file=val_file_id,
